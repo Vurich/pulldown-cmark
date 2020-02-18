@@ -99,21 +99,21 @@ pub enum Tag<'a> {
     Strikethrough,
 
     /// A link. The first field is the link type, the second the destination URL and the third is a title.
-    Link(LinkType, CowStr<'a>, CowStr<'a>),
+    Link(LinkType<'a>, CowStr<'a>, CowStr<'a>),
 
     /// An image. The first field is the link type, the second the destination URL and the third is a title.
-    Image(LinkType, CowStr<'a>, CowStr<'a>),
+    Image(LinkType<'a>, CowStr<'a>, CowStr<'a>),
 }
 
 /// Type specifier for inline links. See [the Tag::Link](enum.Tag.html#variant.Link) for more information.
-#[derive(Clone, Debug, PartialEq, Copy)]
-pub enum LinkType {
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkType<'a> {
     /// Inline link like `[foo](bar)`
     Inline,
-    /// Reference link like `[foo][bar]`
-    Reference,
+    /// Reference link like `[foo][bar]` (contains the name of the reference)
+    Reference(CowStr<'a>),
     /// Reference without destination in the document, but resolved by the broken_link_callback
-    ReferenceUnknown,
+    ReferenceUnknown(CowStr<'a>),
     /// Collapsed link like `[foo][]`
     Collapsed,
     /// Collapsed link without destination in the document, but resolved by the broken_link_callback
@@ -128,10 +128,10 @@ pub enum LinkType {
     Email,
 }
 
-impl LinkType {
+impl LinkType<'_> {
     fn to_unknown(self) -> Self {
         match self {
-            LinkType::Reference => LinkType::ReferenceUnknown,
+            LinkType::Reference(rname) => LinkType::ReferenceUnknown(rname),
             LinkType::Collapsed => LinkType::CollapsedUnknown,
             LinkType::Shortcut => LinkType::ShortcutUnknown,
             _ => unreachable!(),
@@ -1849,7 +1849,7 @@ struct AlignmentIndex(usize);
 #[derive(Clone)]
 struct Allocations<'a> {
     refdefs: HashMap<LinkLabel<'a>, LinkDef<'a>>,
-    links: Vec<(LinkType, CowStr<'a>, CowStr<'a>)>,
+    links: Vec<(LinkType<'a>, CowStr<'a>, CowStr<'a>)>,
     cows: Vec<CowStr<'a>>,
     alignments: Vec<Vec<Alignment>>,
 }
@@ -1870,7 +1870,7 @@ impl<'a> Allocations<'a> {
         CowIndex(ix)
     }
 
-    fn allocate_link(&mut self, ty: LinkType, url: CowStr<'a>, title: CowStr<'a>) -> LinkIndex {
+    fn allocate_link(&mut self, ty: LinkType<'a>, url: CowStr<'a>, title: CowStr<'a>) -> LinkIndex {
         let ix = self.links.len();
         self.links.push((ty, url, title));
         LinkIndex(ix)
@@ -1892,7 +1892,7 @@ impl<'a> Index<CowIndex> for Allocations<'a> {
 }
 
 impl<'a> Index<LinkIndex> for Allocations<'a> {
-    type Output = (LinkType, CowStr<'a>, CowStr<'a>);
+    type Output = (LinkType<'a>, CowStr<'a>, CowStr<'a>);
 
     fn index(&self, ix: LinkIndex) -> &Self::Output {
         self.links.index(ix.0)
@@ -2150,8 +2150,9 @@ impl<'a> Parser<'a> {
                                 RefScan::Collapsed(next_node) => next_node,
                                 RefScan::Failed => next,
                             };
+
                             let link_type = match &scan_result {
-                                RefScan::LinkLabel(..) => LinkType::Reference,
+                                RefScan::LinkLabel(l, ..) => LinkType::Reference(l.clone()),
                                 RefScan::Collapsed(..) => LinkType::Collapsed,
                                 RefScan::Failed => LinkType::Shortcut,
                             };
@@ -2192,7 +2193,7 @@ impl<'a> Parser<'a> {
                                             .cloned()
                                             .unwrap_or_else(|| "".into());
                                         let url = matching_def.dest.clone();
-                                        (link_type, url, title)
+                                        (link_type.clone(), url, title)
                                     })
                                     .or_else(|| {
                                         self.broken_link_callback
@@ -2202,7 +2203,11 @@ impl<'a> Parser<'a> {
                                                 callback(link_label.as_ref(), link_label.as_ref())
                                             })
                                             .map(|(url, title)| {
-                                                (link_type.to_unknown(), url.into(), title.into())
+                                                (
+                                                    link_type.clone().to_unknown(),
+                                                    url.into(),
+                                                    title.into(),
+                                                )
                                             })
                                     });
 
@@ -2694,11 +2699,11 @@ fn item_to_tag<'a>(item: &Item, allocs: &Allocations<'a>) -> Tag<'a> {
         ItemBody::Strikethrough => Tag::Strikethrough,
         ItemBody::Link(link_ix) => {
             let &(ref link_type, ref url, ref title) = allocs.index(link_ix);
-            Tag::Link(*link_type, url.clone(), title.clone())
+            Tag::Link(link_type.clone(), url.clone(), title.clone())
         }
         ItemBody::Image(link_ix) => {
             let &(ref link_type, ref url, ref title) = allocs.index(link_ix);
-            Tag::Image(*link_type, url.clone(), title.clone())
+            Tag::Image(link_type.clone(), url.clone(), title.clone())
         }
         ItemBody::Heading(level) => Tag::Heading(level),
         ItemBody::FencedCodeBlock(cow_ix) => {
@@ -2743,11 +2748,11 @@ fn item_to_event<'a>(item: Item, text: &'a str, allocs: &Allocations<'a>) -> Eve
         ItemBody::Strikethrough => Tag::Strikethrough,
         ItemBody::Link(link_ix) => {
             let &(ref link_type, ref url, ref title) = allocs.index(link_ix);
-            Tag::Link(*link_type, url.clone(), title.clone())
+            Tag::Link(link_type.clone(), url.clone(), title.clone())
         }
         ItemBody::Image(link_ix) => {
             let &(ref link_type, ref url, ref title) = allocs.index(link_ix);
-            Tag::Image(*link_type, url.clone(), title.clone())
+            Tag::Image(link_type.clone(), url.clone(), title.clone())
         }
         ItemBody::Heading(level) => Tag::Heading(level),
         ItemBody::FencedCodeBlock(cow_ix) => {
